@@ -14,6 +14,7 @@ import re
 import tf
 import math
 from scipy.optimize import root
+from scipy.optimize import fsolve
 from tf.listener import TransformListener
 from tf.transformations import quaternion_from_euler
 """
@@ -53,17 +54,16 @@ def odom_callback(message):
 
 def trans_secret_odom(objects_odom_position, objects_secret_position):
     def f(x):
-        eqs = []
-        eqs.append(-objects_odom_position[0][0]+objects_secret_position[0][0]*np.cos(x[0])-objects_secret_position[0][1]*np.sin(x[0])+x[1])
-        eqs.append(-objects_odom_position[0][1]+objects_secret_position[0][0]*np.sin(x[0])+objects_secret_position[0][1]*np.cos(x[0])+x[2])
-        eqs.append(-objects_odom_position[1][0]+objects_secret_position[1][0]*np.cos(x[0])-objects_secret_position[1][1]*np.sin(x[0])+x[1])
-        return eqs
+        eqs_1 = -objects_odom_position[0][0]+float(objects_secret_position[0][0])*np.cos(x[0])-float(objects_secret_position[0][1])*np.sin(x[0])+x[1]
+        eqs_2 = -objects_odom_position[0][1]+float(objects_secret_position[0][0])*np.sin(x[0])+float(objects_secret_position[0][1])*np.cos(x[0])+x[2]
+        eqs_3 = -objects_odom_position[1][0]+float(objects_secret_position[1][0])*np.cos(x[0])-float(objects_secret_position[1][1])*np.sin(x[0])+x[1]
+        return [eqs_1, eqs_2, eqs_3]
+    results = fsolve(f, [0, 0, 0])
 
-    results = root(f, [0, 0, 0]).x
-    T = np.array([np.cos(results[0]), -np.sin(results[0]), 0, results[1]], 
+    T = np.array([[np.cos(results[0]), -np.sin(results[0]), 0, results[1]], 
             [np.sin(results[0]), np.cos(results[0]), 0, results[2]], 
             [0, 0, 1, 0],
-            [0, 0, 0, 1])
+            [0, 0, 0, 1]])
     return T
 
 def eulerAnglesToRotationMatrix(r, p, y):
@@ -135,20 +135,18 @@ def goal_pose(pose):
 if __name__ == '__main__':
     rospy.init_node('patrol')
     rate = rospy.Rate(10.0)
+    trans_secret_odom_solved = False
     while True:
         #rospy.Subscriber("/odom", Odometry, odom_callback)
         rospy.Subscriber("visp_auto_tracker/code_message", String, code_message_callback, queue_size=1)
         rospy.Subscriber("visp_auto_tracker/object_position", PoseStamped, object_position_callback, queue_size=1)
 
-        if np.size(tags_1)==2 and np.size(tags_2)==2:
-            rospy.sleep(5)
-            print("++++++++++++++++++++++++++++++++++++++++")
-            print(objects_odom_position)
-            #objects_secret_position = delete_duplicated_elements(objects_secret_position)
-            print(objects_secret_position)
+        if np.size(tags_1)==2 and np.size(tags_2)==2 and not trans_secret_odom_solved:
+            get_trans_secret_odom = True
+            rospy.sleep(3)
+            print("The transform from secret frame to odom frame is: ")
             trans_secret_odom = trans_secret_odom(objects_odom_position, objects_secret_position)
             print(trans_secret_odom)
-            rospy.sleep(10)
 """
         client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         client.wait_for_server()
