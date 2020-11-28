@@ -13,6 +13,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 import re
 import tf
 import math
+import copy
 from scipy.optimize import root
 from scipy.optimize import fsolve
 from tf.listener import TransformListener
@@ -36,11 +37,21 @@ global objects_odom_position
 objects_odom_position = []
 global next_objects_odom_position
 next_objects_odom_position = []
+global next_object_secret_position
+next_object_secret_position = []
+
 
 global tags_1
 tags_1 = []
 global tags_2
 tags_2 = []
+global tag
+tag = 0
+global trans
+trans = [0, 0, 0]
+global rot
+rot = [0, 0, 0, 0]
+
 
 def odom_callback(message):
     global robot_odom_position
@@ -55,14 +66,30 @@ def odom_callback(message):
         "odom")
 
 def trans_secret_odom(objects_odom_position, objects_secret_position):
-    print(objects_odom_position)
-    print(objects_secret_position)
+    #print(objects_odom_position)
+    #print(objects_secret_position)
+    """
     A = np.array([[float(objects_secret_position[0][0]), -float(objects_secret_position[0][1]), 1, 0],
             [float(objects_secret_position[0][1]), float(objects_secret_position[0][0]), 0, 1],
             [float(objects_secret_position[1][0]), -float(objects_secret_position[1][1]), 1, 0],
             [float(objects_secret_position[1][1]), float(objects_secret_position[1][0]), 0, 1]])
+
     b = np.array([[objects_odom_position[0][0], objects_odom_position[0][1], objects_odom_position[1][0], objects_odom_position[1][1]]]).T
+
     results = np.linalg.solve(A, b)
+    """
+    sub_x_world_12 = float(objects_odom_position[0][0]) - float(objects_odom_position[1][0])
+    sub_y_world_12 = float(objects_odom_position[0][1]) - float(objects_odom_position[1][1])
+    sub_x_secret_12 = float(objects_secret_position[0][0]) - float(objects_secret_position[1][0])
+    sub_y_secret_12 = float(objects_secret_position[0][1]) - float(objects_secret_position[1][1])
+
+    sin_theta = (sub_x_secret_12 * sub_y_world_12 - sub_y_secret_12 * sub_x_world_12) / (pow(sub_x_secret_12, 2) + pow(sub_y_secret_12, 2))
+    cos_theta = (sub_x_world_12 + sin_theta * sub_y_secret_12) / sub_x_secret_12
+    theta = math.atan2(sin_theta, cos_theta)
+    x_ref_world = float(objects_odom_position[1][0]) - cos_theta * float(objects_secret_position[1][0]) + sin_theta * float(objects_secret_position[1][1])
+    y_ref_world = float(objects_odom_position[1][1]) - sin_theta * float(objects_secret_position[1][0])- cos_theta * float(objects_secret_position[1][1])
+    results = [cos_theta, sin_theta, x_ref_world, y_ref_world]
+
     T = np.array([[results[0], -results[1], 0, results[2]], 
             [results[1], results[0], 0, results[3]], 
             [0, 0, 1, 0],
@@ -88,37 +115,47 @@ def object_position_callback(message):
     global objects_odom_position
     global tag
     global tags_2
+    global trans
+    global rot
+    listener = TransformListener()
+    rospy.sleep(1)
+    (trans, rot) = listener.lookupTransform('/odom', '/camera_optical_link', rospy.Time(0))
     if qr_code_info != []:
         if(qr_code_info[4] not in tags_2):
-            tags_2.append(tag)
-            print("tag: ", tag)
-            try:
-                listener = TransformListener()
-                rospy.sleep(1)
-                (trans, rot) = listener.lookupTransform('/odom', '/camera_optical_link', rospy.Time(0))
-                (r_cam, p_cam, y_cam) = tf.transformations.euler_from_quaternion([rot[0], rot[1], rot[2], rot[3]])
-                trans_rotation_cam_odom = np.insert(eulerAnglesToRotationMatrix(r_cam, p_cam, y_cam), 3, [0, 0, 0], 0)
-                trans_translation_cam_odom = [trans[0], trans[1], trans[2], 1]
-                trans_cam_odom = np.insert(trans_rotation_cam_odom, 3, trans_translation_cam_odom, 1)
-                object_odom_position = np.dot(trans_cam_odom, [message.pose.position.x, message.pose.position.y, message.pose.position.z, 1]) 
-                objects_odom_position.append(object_odom_position)
+            if(np.size(tags_2)<=2 or (np.size(tags_2)>2 and (float(qr_code_info[4])-float(tag)==1 or float(qr_code_info[4])-float(tag)==-4))):
+                tags_2.append(tag)
+                print("Current tag: ", tag)
+                try:
+                    (r_cam, p_cam, y_cam) = tf.transformations.euler_from_quaternion([rot[0], rot[1], rot[2], rot[3]])
+                    trans_rotation_cam_odom = np.insert(eulerAnglesToRotationMatrix(r_cam, p_cam, y_cam), 3, [0, 0, 0], 0)
+                    trans_translation_cam_odom = [trans[0], trans[1], trans[2], 1]
+                    trans_cam_odom = np.insert(trans_rotation_cam_odom, 3, trans_translation_cam_odom, 1)
+                    object_odom_position = np.dot(trans_cam_odom, [message.pose.position.x, message.pose.position.y, message.pose.position.z, 1]) 
+                    objects_odom_position.append(object_odom_position)
 
-            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-                print("fault")
+                except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                    print("fault")
             
 def code_message_callback(message):
     global qr_code_info
     global objects_secret_position
     global next_objects_secret_position
+    global next_object_secret_position
     global tag
     global tags_1
-    qr_code_info = re.findall(r"\d+\.?\d*", str(message))
+    global trans
+    global rot
+    qr_code_info = re.findall(r"[-+]?\d*\.\d+|\d+", str(message))
+    
+
     if qr_code_info != []:
         if qr_code_info[4] not in tags_1:
-            tag = qr_code_info[4]
-            tags_1.append(tag)
-            objects_secret_position.append([qr_code_info[0], qr_code_info[1]])
-            next_objects_secret_position.append([qr_code_info[2], qr_code_info[3]])
+            if(np.size(tags_1)<=2 or (np.size(tags_1)>2 and (float(qr_code_info[4])-float(tag)==1 or float(qr_code_info[4])-float(tag)==-4))):
+                tag = qr_code_info[4]
+                tags_1.append(tag)
+                objects_secret_position.append([qr_code_info[0], qr_code_info[1]])
+                next_object_secret_position = [qr_code_info[2], qr_code_info[3]]
+                next_objects_secret_position.append(next_object_secret_position)
  
 def goal_pose(pose):
     if pose == []:
@@ -138,30 +175,36 @@ def goal_pose(pose):
 if __name__ == '__main__':
     rospy.init_node('patrol')
     rate = rospy.Rate(10.0)
-    trans_secret_odom_solved = False
-    while True:
-        #rospy.Subscriber("/odom", Odometry, odom_callback)
-        rospy.Subscriber("visp_auto_tracker/code_message", String, code_message_callback, queue_size=1)
-        rospy.Subscriber("visp_auto_tracker/object_position", PoseStamped, object_position_callback, queue_size=1)
+    trans_secret_odom_solved = False    # if the transform matrix from secret to odom solved
 
-        if np.size(tags_1)==2 and np.size(tags_2)==2 and not trans_secret_odom_solved:
+    #rospy.Subscriber("/odom", Odometry, odom_callback)
+    cmd_vel = rospy.Publisher('/cmd_vel', Twist, queue_size=5)
+    rospy.Subscriber("visp_auto_tracker/code_message", String, code_message_callback, queue_size=10)
+    rospy.Subscriber("visp_auto_tracker/object_position", PoseStamped, object_position_callback, queue_size=10)
+
+    while not trans_secret_odom_solved:
+        if np.size(tags_1)>=2 and np.size(tags_2)>=2:
             trans_secret_odom_solved = True
             rospy.sleep(3)
             print("The transform from secret frame to odom frame is: ")
             trans_secret_odom = trans_secret_odom(objects_odom_position, objects_secret_position)
             print(trans_secret_odom)
+    while trans_secret_odom_solved:
+        print("next_object_secret_position", next_object_secret_position)
+        next_robot_secret_position = [float(next_object_secret_position[0]), float(next_object_secret_position[1])]
+        next_robot_odom_position = np.dot(trans_secret_odom, np.array(np.insert(next_robot_secret_position, 2, [0, 1], 0), dtype='float64'))
+        next_robot_odom_position = [next_robot_odom_position, [0, 0, 0, 1]]
+        client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+        client.wait_for_server()
         
-        if trans_secret_odom_solved:
-            next_object_odom_position = np.dot(trans_secret_odom, np.array(np.insert(next_objects_secret_position[0], 2, [0, 1], 0), dtype='float64'))
-            next_object_odom_position = [next_object_odom_position, [0, 0, 0, 1]]
-            client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
-            client.wait_for_server()
-
-            goal_position = goal_pose(next_object_odom_position)
-            client.send_goal(goal_position)
-            client.wait_for_result()
-            rospy.sleep(10)
-    """
+        goal_position = goal_pose(next_robot_odom_position)
+        client.send_goal(goal_position)
+        client.wait_for_result()
+        rospy.sleep(5)
+        
+        if np.size(tags_1) == 5 and np.size(tags_2) == 5:
+            break
+"""
         next_point = [(robot_map_position.pose.pose.position.x, robot_map_position.pose.pose.position.y, 0), (0, 0, 0, 1)]
         goal_rotation = goal_pose(next_point)
         client.send_goal(goal_rotation)
