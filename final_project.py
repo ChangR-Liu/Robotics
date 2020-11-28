@@ -34,6 +34,8 @@ global robot_odom_position
 robot_odom_position = []
 global objects_odom_position
 objects_odom_position = []
+global next_objects_odom_position
+next_objects_odom_position = []
 
 global tags_1
 tags_1 = []
@@ -53,19 +55,20 @@ def odom_callback(message):
         "odom")
 
 def trans_secret_odom(objects_odom_position, objects_secret_position):
-    def f(x):
-        eqs_1 = -objects_odom_position[0][0]+float(objects_secret_position[0][0])*np.cos(x[0])-float(objects_secret_position[0][1])*np.sin(x[0])+x[1]
-        eqs_2 = -objects_odom_position[0][1]+float(objects_secret_position[0][0])*np.sin(x[0])+float(objects_secret_position[0][1])*np.cos(x[0])+x[2]
-        eqs_3 = -objects_odom_position[1][0]+float(objects_secret_position[1][0])*np.cos(x[0])-float(objects_secret_position[1][1])*np.sin(x[0])+x[1]
-        return [eqs_1, eqs_2, eqs_3]
-    results = fsolve(f, [0, 0, 0])
-
-    T = np.array([[np.cos(results[0]), -np.sin(results[0]), 0, results[1]], 
-            [np.sin(results[0]), np.cos(results[0]), 0, results[2]], 
+    print(objects_odom_position)
+    print(objects_secret_position)
+    A = np.array([[float(objects_secret_position[0][0]), -float(objects_secret_position[0][1]), 1, 0],
+            [float(objects_secret_position[0][1]), float(objects_secret_position[0][0]), 0, 1],
+            [float(objects_secret_position[1][0]), -float(objects_secret_position[1][1]), 1, 0],
+            [float(objects_secret_position[1][1]), float(objects_secret_position[1][0]), 0, 1]])
+    b = np.array([[objects_odom_position[0][0], objects_odom_position[0][1], objects_odom_position[1][0], objects_odom_position[1][1]]]).T
+    results = np.linalg.solve(A, b)
+    T = np.array([[results[0], -results[1], 0, results[2]], 
+            [results[1], results[0], 0, results[3]], 
             [0, 0, 1, 0],
-            [0, 0, 0, 1]])
+            [0, 0, 0, 1]], dtype='float64')
     return T
-
+ 
 def eulerAnglesToRotationMatrix(r, p, y):
     R_x = np.array([[1, 0, 0],
                     [0, math.cos(r), -math.sin(r)],
@@ -142,18 +145,23 @@ if __name__ == '__main__':
         rospy.Subscriber("visp_auto_tracker/object_position", PoseStamped, object_position_callback, queue_size=1)
 
         if np.size(tags_1)==2 and np.size(tags_2)==2 and not trans_secret_odom_solved:
-            get_trans_secret_odom = True
+            trans_secret_odom_solved = True
             rospy.sleep(3)
             print("The transform from secret frame to odom frame is: ")
             trans_secret_odom = trans_secret_odom(objects_odom_position, objects_secret_position)
             print(trans_secret_odom)
-"""
-        client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
-        client.wait_for_server()
-        next_point = [(robot_map_position.pose.pose.position.x, robot_map_position.pose.pose.position.y, 0), (0, 0, 0, 0)]
-        goal_rotation = goal_pose(next_point)
-        client.send_goal(goal_rotation)
-        client.wait_for_result()
+        
+        if trans_secret_odom_solved:
+            next_object_odom_position = np.dot(trans_secret_odom, np.array(np.insert(next_objects_secret_position[0], 2, [0, 1], 0), dtype='float64'))
+            next_object_odom_position = [next_object_odom_position, [0, 0, 0, 1]]
+            client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+            client.wait_for_server()
+
+            goal_position = goal_pose(next_object_odom_position)
+            client.send_goal(goal_position)
+            client.wait_for_result()
+            rospy.sleep(10)
+    """
         next_point = [(robot_map_position.pose.pose.position.x, robot_map_position.pose.pose.position.y, 0), (0, 0, 0, 1)]
         goal_rotation = goal_pose(next_point)
         client.send_goal(goal_rotation)
