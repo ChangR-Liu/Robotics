@@ -4,18 +4,16 @@ import numpy as np
 import rospy
 import actionlib
 import nav_msgs.msg
-from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
-
-from nav_msgs.msg import Odometry
-from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped, Twist
-
 import re
 import tf
 import math
 import copy
-from scipy.optimize import root
-from scipy.optimize import fsolve
+
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from nav_msgs.msg import Odometry
+from std_msgs.msg import String, Int8
+from geometry_msgs.msg import PoseStamped, Twist
+from scipy.optimize import root, fsolve
 from tf.listener import TransformListener
 from tf.transformations import quaternion_from_euler
 """
@@ -39,7 +37,8 @@ global next_objects_odom_position
 next_objects_odom_position = []
 global next_object_secret_position
 next_object_secret_position = []
-
+global object_odom_position
+object_odom_position = []
 
 global tags_1
 tags_1 = []
@@ -51,7 +50,12 @@ global trans
 trans = [0, 0, 0]
 global rot
 rot = [0, 0, 0, 0]
+global code_status
+code_status = 0
 
+def status_callback(message):
+    global code_status
+    code_status=message.data
 
 def odom_callback(message):
     global robot_odom_position
@@ -113,18 +117,19 @@ def eulerAnglesToRotationMatrix(r, p, y):
 
 def object_position_callback(message):
     global objects_odom_position
+    global object_odom_position
     global tag
     global tags_2
     global trans
     global rot
     listener = TransformListener()
-    rospy.sleep(1)
-    (trans, rot) = listener.lookupTransform('/odom', '/camera_optical_link', rospy.Time(0))
+    listener.waitForTransform('/odom', '/camera_optical_link', rospy.Time(), rospy.Duration(4.0))
+    now = rospy.Time.now()
+    listener.waitForTransform('/odom', '/camera_optical_link', now, rospy.Duration(4.0))
+    (trans, rot) = listener.lookupTransform('/odom', '/camera_optical_link', now)
     if qr_code_info != []:
         if(qr_code_info[4] not in tags_2):
             if(np.size(tags_2)<=2 or (np.size(tags_2)>2 and (float(qr_code_info[4])-float(tag)==1 or float(qr_code_info[4])-float(tag)==-4))):
-                tags_2.append(tag)
-                print("Current tag: ", tag)
                 try:
                     (r_cam, p_cam, y_cam) = tf.transformations.euler_from_quaternion([rot[0], rot[1], rot[2], rot[3]])
                     trans_rotation_cam_odom = np.insert(eulerAnglesToRotationMatrix(r_cam, p_cam, y_cam), 3, [0, 0, 0], 0)
@@ -132,6 +137,9 @@ def object_position_callback(message):
                     trans_cam_odom = np.insert(trans_rotation_cam_odom, 3, trans_translation_cam_odom, 1)
                     object_odom_position = np.dot(trans_cam_odom, [message.pose.position.x, message.pose.position.y, message.pose.position.z, 1]) 
                     objects_odom_position.append(object_odom_position)
+
+                    tags_2.append(tag)
+                    print("Current tag: ", tag)
 
                 except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
                     print("fault")
@@ -147,15 +155,15 @@ def code_message_callback(message):
     global rot
     qr_code_info = re.findall(r"[-+]?\d*\.\d+|\d+", str(message))
     
-
     if qr_code_info != []:
-        if qr_code_info[4] not in tags_1:
+        if qr_code_info[4] not in tags_1:            
             if(np.size(tags_1)<=2 or (np.size(tags_1)>2 and (float(qr_code_info[4])-float(tag)==1 or float(qr_code_info[4])-float(tag)==-4))):
                 tag = qr_code_info[4]
                 tags_1.append(tag)
                 objects_secret_position.append([qr_code_info[0], qr_code_info[1]])
                 next_object_secret_position = [qr_code_info[2], qr_code_info[3]]
                 next_objects_secret_position.append(next_object_secret_position)
+
  
 def goal_pose(pose):
     if pose == []:
@@ -179,16 +187,24 @@ if __name__ == '__main__':
 
     #rospy.Subscriber("/odom", Odometry, odom_callback)
     cmd_vel = rospy.Publisher('/cmd_vel', Twist, queue_size=5)
+    rospy.Subscriber("visp_auto_tracker/status", Int8, status_callback, queue_size=10)
     rospy.Subscriber("visp_auto_tracker/code_message", String, code_message_callback, queue_size=10)
     rospy.Subscriber("visp_auto_tracker/object_position", PoseStamped, object_position_callback, queue_size=10)
 
     while not trans_secret_odom_solved:
-        if np.size(tags_1)>=2 and np.size(tags_2)>=2:
+        # if np.size(tags_1)==2 and np.size(tags_2)!=2:
+        #     twist = Twist()
+        #     twist.linear.x = 0.0
+        #     twist.angular.z = 0.0
+        #     cmd_vel.publish(twist)
+        #     print("tags_1 = 2, tags_2 != 2")
+        #     rospy.sleep(3)
+        if np.size(tags_1)==2 and np.size(tags_2)==2:
             trans_secret_odom_solved = True
-            rospy.sleep(3)
             print("The transform from secret frame to odom frame is: ")
             trans_secret_odom = trans_secret_odom(objects_odom_position, objects_secret_position)
             print(trans_secret_odom)
+
     while trans_secret_odom_solved:
         print("next_object_secret_position", next_object_secret_position)
         next_robot_secret_position = [float(next_object_secret_position[0]), float(next_object_secret_position[1])]
@@ -197,7 +213,7 @@ if __name__ == '__main__':
         client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         client.wait_for_server()
         
-        goal_position = goal_pose(next_robot_odom_position)
+        goal_position = goal_pose([object_odom_position,[0,0,0,1]])
         client.send_goal(goal_position)
         client.wait_for_result()
         rospy.sleep(5)
