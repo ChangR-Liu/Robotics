@@ -48,6 +48,7 @@ global next_object_secret_position
 next_object_secret_position = []
 
 global SMaRt_element
+SMaRt_element = ''
 global SMaRt_messages
 SMaRt_messages = {}
 
@@ -151,10 +152,12 @@ def code_message_callback(message):
         object_secret_position = [qr_code_info[0], qr_code_info[1], 0, 1]
         next_object_secret_position = [qr_code_info[2], qr_code_info[3], 0, 1]
         tag = qr_code_info[4]
-        SMaRt_element = str(message)[-1]
+        SMaRt_element = str(message)[-2]
 
 if __name__ == '__main__':
     rospy.init_node('patrol')
+    client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+    client.wait_for_server()
     rate = rospy.Rate(10)
     #rospy.Subscriber("/odom", Odometry, odom_callback)
     Cmd_vel = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
@@ -162,6 +165,11 @@ if __name__ == '__main__':
     rospy.Subscriber("visp_auto_tracker/status", Int8, status_callback, queue_size=10)
     rospy.Subscriber("visp_auto_tracker/code_message", String, code_message_callback, queue_size=10)
     rospy.Subscriber("visp_auto_tracker/object_position", PoseStamped, object_position_callback, queue_size=10)
+
+    goal_position = goal_pose([[-4, 0, 0], [0, 0, 0, 0]])
+    client.send_goal(goal_position)
+    client.wait_for_result()
+
     while(np.size(tags)<3):
         object_odom_position_solved = False
         twist_1 = Twist()
@@ -199,22 +207,35 @@ if __name__ == '__main__':
             print(trans_secret_odom)
 
     while object_odom_position_solved:
+        print(SMaRt_messages)
+        if np.size(tags) == 6:
+            break
         print("next_object_secret_position", next_object_secret_position)
-        SMaRt_messages.update({int(tag): SMaRt_element})
-        next_robot_secret_position = [float(next_object_secret_position[0])*0.7, float(next_object_secret_position[1])*0.7]
+        goal_tag = tag
+        print("tag: ", tag)
+        next_robot_secret_position = [float(next_object_secret_position[0])*0.75, float(next_object_secret_position[1])*0.75]
         next_robot_odom_position = np.dot(trans_secret_odom, np.array(np.insert(next_robot_secret_position, 2, [0, 1], 0), dtype='float64'))
         next_robot_odom_position = [next_robot_odom_position, [0,0,0,1]]
 
-        client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
-        client.wait_for_server()
+        
         print("next_robot_odom_position", next_robot_odom_position)
         goal_position = goal_pose(next_robot_odom_position)
         client.send_goal(goal_position)
         client.wait_for_result()
         rospy.sleep(5)
+        if int(tag) - int(goal_tag) == 1 or int(tag) - int(goal_tag) == -4:
+            SMaRt_messages.update({int(tag): SMaRt_element})
+            tags.append(tag)
+            continue
+        else:
+            while(int(tag) - int(goal_tag) != 1 and int(tag) - int(goal_tag) != -4):
+                twist_3 = Twist()
+                twist_3.angular.z = 0.2
+                Cmd_vel.publish(twist_3)
+            SMaRt_messages.update({int(tag): SMaRt_element})
+            tags.append(tag)
+            continue
         
-        if np.size(tags) == 5:
-            break
     SMaRt_messages = sorted(SMaRt_messages.items(), key=lambda x:x[0])
     print(SMaRt_messages)
 """
